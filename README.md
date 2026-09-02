@@ -123,7 +123,9 @@ The result is a JavaScript `Error` whose message is the safe Inception trace
 message. Its `code`, static `description`, structured `location`, visible
 `entries`, and nested Inception `cause` are attached as properties. Hidden
 entries and ordinary external source messages never cross the boundary. This is
-an in-memory FFI projection, not a serialization or wire protocol.
+an in-memory FFI projection, not a serialization or wire protocol. Cause chains
+are cycle-checked and limited to `inception_wasm::MAX_CAUSE_DEPTH` nested
+errors; the last real error receives `causeTruncated` when projection stops.
 
 Define one error type per semantic boundary:
 
