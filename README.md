@@ -127,6 +127,14 @@ an in-memory FFI projection, not a serialization or wire protocol. Cause chains
 are cycle-checked and limited to `inception_wasm::MAX_CAUSE_DEPTH` nested
 errors; the last real error receives `causeTruncated` when projection stops.
 
+Projection remains best-effort in a hostile JavaScript realm. The native
+`Error` constructor is captured when the WASM module initializes. Once a base
+error exists, every object, array, descriptor, and property operation is caught;
+a rejected operation only omits its optional field or substructure and never
+replaces the base error with the JavaScript exception. If the captured native
+constructor itself cannot create the base error, conversion returns the safe
+Inception trace message string instead.
+
 Define one error type per semantic boundary:
 
 ```rust

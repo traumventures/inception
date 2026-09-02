@@ -29,6 +29,81 @@ fn get(target: &JsValue, key: &str) -> JsValue {
     Reflect::get(target, &JsValue::from_str(key)).expect("property is readable")
 }
 
+struct RestoreProperty {
+    target: JsValue,
+    key: JsValue,
+    previous: JsValue,
+    define_property: Function,
+}
+
+impl Drop for RestoreProperty {
+    fn drop(&mut self) {
+        if self.previous.is_undefined() {
+            let _ = Reflect::delete_property(self.target.unchecked_ref::<Object>(), &self.key);
+        } else {
+            let _ = self.define_property.call3(
+                &JsValue::UNDEFINED,
+                &self.target,
+                &self.key,
+                &self.previous,
+            );
+        }
+    }
+}
+
+fn replace_property_descriptor(
+    target: &JsValue,
+    key: &str,
+    descriptor: &Object,
+) -> RestoreProperty {
+    let key = JsValue::from_str(key);
+    let object: &Object = target.unchecked_ref();
+    let previous = Object::get_own_property_descriptor(object, &key);
+    let reflect = get(&js_sys::global(), "Reflect");
+    let define_property: Function = get(&reflect, "defineProperty").unchecked_into();
+    let restore = RestoreProperty {
+        target: target.clone(),
+        key,
+        previous,
+        define_property,
+    };
+    assert_eq!(
+        restore
+            .define_property
+            .call3(
+                &JsValue::UNDEFINED,
+                target,
+                &restore.key,
+                descriptor.as_ref(),
+            )
+            .expect("property replacement does not throw")
+            .as_bool(),
+        Some(true),
+        "property is replaceable"
+    );
+
+    restore
+}
+
+fn replace_property(target: &JsValue, key: &str, replacement: &JsValue) -> RestoreProperty {
+    let descriptor = Object::new();
+    Reflect::set(&descriptor, &JsValue::from_str("value"), replacement)
+        .expect("replacement descriptor accepts value");
+    Reflect::set(&descriptor, &JsValue::from_str("writable"), &JsValue::TRUE)
+        .expect("replacement descriptor accepts writable flag");
+    Reflect::set(
+        &descriptor,
+        &JsValue::from_str("configurable"),
+        &JsValue::TRUE,
+    )
+    .expect("replacement descriptor accepts configurable flag");
+    replace_property_descriptor(target, key, &descriptor)
+}
+
+fn throwing_function(label: &str) -> Function {
+    Function::new_no_args(&format!("throw '{label}'"))
+}
+
 #[wasm_bindgen_test]
 fn projects_structure_chain_and_visible_entries() {
     let inner = InnerError::failed("mailbox");
@@ -220,36 +295,10 @@ fn owned_derived_chain_is_cut_at_the_documented_limit() {
     );
 }
 
-struct RestoreArrayIndex {
-    prototype: Object,
-    previous: JsValue,
-}
-
-impl Drop for RestoreArrayIndex {
-    fn drop(&mut self) {
-        let key = JsValue::from_str("0");
-        if self.previous.is_undefined() {
-            let _ = Reflect::delete_property(&self.prototype, &key);
-        } else {
-            let _ = Reflect::define_property(
-                &self.prototype,
-                &key,
-                self.previous.unchecked_ref::<Object>(),
-            );
-        }
-    }
-}
-
 #[wasm_bindgen_test]
 fn poisoned_array_index_setter_cannot_escape_projection() {
     let array_constructor = get(&js_sys::global(), "Array");
     let prototype: Object = get(&array_constructor, "prototype").unchecked_into();
-    let key = JsValue::from_str("0");
-    let previous = Object::get_own_property_descriptor(&prototype, &key);
-    let _restore = RestoreArrayIndex {
-        prototype: prototype.clone(),
-        previous,
-    };
 
     let descriptor = Object::new();
     Reflect::set(
@@ -264,10 +313,7 @@ fn poisoned_array_index_setter_cannot_escape_projection() {
         &JsValue::TRUE,
     )
     .expect("descriptor accepts configurable flag");
-    assert!(
-        Reflect::define_property(&prototype, &key, &descriptor)
-            .expect("prototype property can be defined")
-    );
+    let _restore = replace_property_descriptor(prototype.as_ref(), "0", &descriptor);
 
     let value = inception_wasm::to_js_error_ref(&SELF_CYCLE);
     assert!(value.is_instance_of::<Error>());
@@ -284,5 +330,109 @@ fn poisoned_array_index_setter_cannot_escape_projection() {
     assert_eq!(
         get(&entries.get(0), "value").as_string().as_deref(),
         Some("self")
+    );
+}
+
+#[wasm_bindgen_test]
+fn throwing_object_create_cannot_remove_base_error_or_stable_fields() {
+    let global = js_sys::global();
+    let object_constructor = get(&global, "Object");
+    let replacement = throwing_function("poisoned Object.create");
+    let value = {
+        let _restore = replace_property(&object_constructor, "create", replacement.as_ref());
+        inception_wasm::to_js_error_ref(&SELF_CYCLE)
+    };
+
+    assert!(value.is_instance_of::<Error>());
+    assert_eq!(
+        value.unchecked_ref::<Error>().message(),
+        SELF_CYCLE.trace_message().as_ref()
+    );
+    assert_eq!(
+        get(&value, "code").as_string().as_deref(),
+        Some("cycle.self")
+    );
+}
+
+#[wasm_bindgen_test]
+fn throwing_optional_object_constructor_only_omits_object_structure() {
+    let global = js_sys::global();
+    let replacement = throwing_function("poisoned Object constructor");
+    let value = {
+        let _restore = replace_property(&global, "Object", replacement.as_ref());
+        inception_wasm::to_js_error_ref(&SELF_CYCLE)
+    };
+
+    assert!(value.is_instance_of::<Error>());
+    assert_eq!(
+        value.unchecked_ref::<Error>().message(),
+        SELF_CYCLE.trace_message().as_ref()
+    );
+    assert_eq!(
+        get(&value, "code").as_string().as_deref(),
+        Some("cycle.self")
+    );
+    assert!(get(&value, "location").is_undefined());
+    assert_eq!(Array::from(&get(&value, "entries")).length(), 0);
+}
+
+#[wasm_bindgen_test]
+fn throwing_optional_array_constructor_only_omits_entries() {
+    let global = js_sys::global();
+    let replacement = throwing_function("poisoned Array constructor");
+    let value = {
+        let _restore = replace_property(&global, "Array", replacement.as_ref());
+        inception_wasm::to_js_error_ref(&SELF_CYCLE)
+    };
+
+    assert!(value.is_instance_of::<Error>());
+    assert_eq!(
+        value.unchecked_ref::<Error>().message(),
+        SELF_CYCLE.trace_message().as_ref()
+    );
+    assert_eq!(
+        get(&value, "code").as_string().as_deref(),
+        Some("cycle.self")
+    );
+    assert!(get(&value, "entries").is_undefined());
+    assert!(!get(&value, "location").is_undefined());
+}
+
+#[wasm_bindgen_test]
+fn throwing_property_definition_returns_the_untouched_base_error() {
+    let global = js_sys::global();
+    let reflect = get(&global, "Reflect");
+    let replacement = throwing_function("poisoned Reflect.defineProperty");
+    let value = {
+        let _restore = replace_property(&reflect, "defineProperty", replacement.as_ref());
+        inception_wasm::to_js_error_ref(&SELF_CYCLE)
+    };
+
+    assert!(value.is_instance_of::<Error>());
+    assert_eq!(
+        value.unchecked_ref::<Error>().message(),
+        SELF_CYCLE.trace_message().as_ref()
+    );
+    assert!(get(&value, "code").is_undefined());
+    assert!(get(&value, "description").is_undefined());
+}
+
+#[wasm_bindgen_test]
+fn replacing_global_error_does_not_replace_the_captured_native_error() {
+    let global = js_sys::global();
+    let replacement = throwing_function("poisoned Error constructor");
+    let value = {
+        let _restore = replace_property(&global, "Error", replacement.as_ref());
+        inception_wasm::to_js_error_ref(&SELF_CYCLE)
+    };
+
+    assert!(value.is_instance_of::<Error>());
+    assert_eq!(
+        value.unchecked_ref::<Error>().message(),
+        SELF_CYCLE.trace_message().as_ref()
+    );
+    assert_eq!(
+        get(&value, "code").as_string().as_deref(),
+        Some("cycle.self")
     );
 }
