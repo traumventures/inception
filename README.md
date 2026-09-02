@@ -106,6 +106,25 @@ Add the repository dependency:
 inception = { git = "https://github.com/traumwohnung/inception" }
 ```
 
+For a WebAssembly boundary, add the companion crate too:
+
+```toml
+[dependencies]
+inception-wasm = { git = "https://github.com/traumwohnung/inception" }
+```
+
+Convert a typed error directly in a `Result` chain:
+
+```rust,ignore
+operation().map_err(inception_wasm::to_js_error)?;
+```
+
+The result is a JavaScript `Error` whose message is the safe Inception trace
+message. Its `code`, static `description`, structured `location`, visible
+`entries`, and nested Inception `cause` are attached as properties. Hidden
+entries and ordinary external source messages never cross the boundary. This is
+an in-memory FFI projection, not a serialization or wire protocol.
+
 Define one error type per semantic boundary:
 
 ```rust
