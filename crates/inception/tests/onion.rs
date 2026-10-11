@@ -241,7 +241,8 @@ fn locate_wraps_ordinary_errors_as_inception_layers() {
     assert_eq!(error.code(), "inception.external");
     assert_eq!(error.created_at().line(), location_line);
     let trace = error.trace().to_string();
-    assert!(trace.contains("std::io"));
+    // std::io::error::Error on older toolchains, core::io::error::Error on newer ones
+    assert!(trace.contains("io::error::Error"));
     assert!(!trace.contains("private"));
     assert_eq!(
         std::error::Error::source(&error).map(ToString::to_string),
