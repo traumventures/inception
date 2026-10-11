@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    uses: traumventures/ci/.github/workflows/rust.yml@v1
+    with:
+      # the serde and tracing features carry their own tests
+      clippy: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      test: cargo test --locked --workspace --all-features
